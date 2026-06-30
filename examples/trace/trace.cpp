@@ -6,7 +6,14 @@
 #include <cmath>
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include "ftxui/component/component.hpp"
+#include "ftxui/component/screen_interactive.hpp"
+#include "ftxui/dom/elements.hpp"
 
+using namespace ftxui;
+
+static std::atomic<int> g_frame_count{0};
 static std::atomic<bool> g_generation_done{false};
 static TraceBuffer g_trace_buffer;
 static AttnBuffer g_attn_buffer;
@@ -67,7 +74,7 @@ static bool eval_callback(struct ggml_tensor* t, bool ask, void* /*user_data*/) 
 
 static void run_generation(llama_context* ctx, const llama_vocab* vocab,
                             std::vector<llama_token> tokens) {
-    int n_predict = 20;
+    int n_predict = 60;
 
     llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
@@ -152,7 +159,58 @@ int main(int argc, char** argv) {
     g_last_ts = std::chrono::steady_clock::now();
 
     std::thread worker(run_generation, ctx, vocab, tokens);
-    worker.join(); // for now: wait for it to finish, same behavior as before (no live TUI yet)
+    auto screen = ScreenInteractive::Fullscreen();
+    auto renderer = Renderer([&] {
+    g_frame_count++;
+    auto events = g_trace_buffer.snapshot();
+    auto attn_snaps = g_attn_buffer.snapshot();
+
+    Elements event_lines;
+    int start = events.size() > 15 ? events.size() - 15 : 0;
+    for (size_t i = start; i < events.size(); i++) {
+        auto& ev = events[i];
+        event_lines.push_back(text(ev.name + "  latency=" + std::to_string(ev.latency_ms) + "ms"));
+    }
+
+    Elements attn_lines;
+    for (auto& s : attn_snaps) {
+        attn_lines.push_back(text(s.layer_name + "  kv_len=" + std::to_string(s.kv_len)
+            + " n_heads=" + std::to_string(s.n_heads)));
+    }
+
+    return vbox({
+        text("LLM Trace — live [frame"+std::to_string(g_frame_count.load())+"]") | bold,
+        separator(),
+        text("Recent layer events:"),
+        vbox(event_lines) | frame | size(HEIGHT, LESS_THAN, 16),
+        separator(),
+        text("Attention snapshots:"),
+        vbox(attn_lines) | frame | size(HEIGHT, LESS_THAN, 10),
+        separator(),
+        text(g_generation_done ? "[generation complete — press q to quit]" : "[generating...]"),
+    }) | border;
+    });
+
+auto renderer_with_quit = CatchEvent(renderer, [&](Event event) {
+    if (event == Event::Character('q')) {
+        screen.Exit();
+        return true;
+    }
+    return false;
+});
+
+std::thread refresher([&] {
+    while (!g_generation_done) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        screen.PostEvent(Event::Custom);
+    }
+    screen.PostEvent(Event::Custom); // final redraw showing "complete"
+});
+
+screen.Loop(renderer_with_quit);
+
+worker.join();
+refresher.join();
 
     auto events = g_trace_buffer.snapshot();
     printf("Captured %zu trace events:\n", events.size());
