@@ -8,7 +8,7 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(ftxui)
 
-add_executable(trace trace.cpp)
+add_executable(trace trace.cpp trace_ui.cpp)
 target_link_libraries(trace PRIVATE llama ggml
   ftxui::screen
   ftxui::dom

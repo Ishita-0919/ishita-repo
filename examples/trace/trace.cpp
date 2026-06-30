@@ -1,3 +1,4 @@
+#include "trace_ui.h"
 #include "llama.h"
 #include "ggml.h"
 #include "trace_recorder.h"
@@ -67,6 +68,10 @@ static bool eval_callback(struct ggml_tensor* t, bool ask, void* /*user_data*/) 
         snap.n_tokens = t->ne[1];
         snap.n_heads = t->ne[2];
         snap.weights.assign(ptr, ptr + nelem);
+        fprintf(stderr, "[ATTN DEBUG] %s nelem=%zu first5=[%.6f %.6f %.6f %.6f %.6f]\n",
+        t->name, nelem,
+        nelem>0?ptr[0]:-1, nelem>1?ptr[1]:-1, nelem>2?ptr[2]:-1,
+        nelem>3?ptr[3]:-1, nelem>4?ptr[4]:-1);
         g_attn_buffer.push(snap);
     }
     return true;
@@ -108,7 +113,39 @@ static void run_generation(llama_context* ctx, const llama_vocab* vocab,
     llama_sampler_free(smpl);
     g_generation_done = true;
 }
+static Element render_attention_heatmap(const AttentionSnap& snap, const std::vector<std::string>& token_strs){
+    int kv_len = snap.kv_len;
+    int n_tokens = snap.n_tokens;
+    int n_heads = snap.n_heads;
 
+    std::vector<float> avg(kv_len*n_tokens, 0.0f);
+    for(int i = 0; i<n_heads; i++){
+        for(int t = 0; t<n_tokens; t++){
+            for(int k = 0; k<kv_len; k++){
+                avg[t*kv_len+k] += snap.weights[(size_t)i*n_tokens*kv_len+t*kv_len+k];
+            }
+        }
+    }
+    for(auto& v: avg) v/=n_heads;
+
+    int show_len = std::min(kv_len, 20);
+    int kv_start = kv_len-show_len;
+
+    const std::string blocks[] = {" ", u8"\u2591", u8"\u2592", u8"\u2593", u8"\u2588"};
+
+    Elements rows;
+    for(int t = 0; t<n_tokens; t++){
+        std::string row;
+        for(int k = kv_start; k<kv_len; k++){
+            float w = avg[t*kv_len+k];
+            int idx = std::min(4, std::max(0, (int)(w*5.0f)));
+            row += blocks[idx];
+        }
+        std::string label = (t<(int)token_strs.size())?token_strs[t]:("tok"+std::to_string(t));
+        rows.push_back(hbox({text(label)|size(WIDTH, EQUAL, 12), text(row)}));
+    }
+    return vbox(rows);
+}
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <model.gguf>\n", argv[0]);
@@ -160,36 +197,53 @@ int main(int argc, char** argv) {
 
     std::thread worker(run_generation, ctx, vocab, tokens);
     auto screen = ScreenInteractive::Fullscreen();
+    // auto renderer = Renderer([&] {
+    // g_frame_count++;
+    // auto events = g_trace_buffer.snapshot();
+    // auto attn_snaps = g_attn_buffer.snapshot();
+
+    // Elements event_lines;
+    // int start = events.size() > 15 ? events.size() - 15 : 0;
+    // for (size_t i = start; i < events.size(); i++) {
+    //     auto& ev = events[i];
+    //     event_lines.push_back(text(ev.name + "  latency=" + std::to_string(ev.latency_ms) + "ms"));
+    // }
+
+    // Elements attn_lines;
+    // for (auto& s : attn_snaps) {
+    //     attn_lines.push_back(text(s.layer_name + "  kv_len=" + std::to_string(s.kv_len)
+    //         + " n_heads=" + std::to_string(s.n_heads)));
+    // }
+
+    // Element heatmap = text("(no attention data yet)");
+    // if(!attn_snaps.empty()){
+    //     heatmap = render_attention_heatmap(attn_snaps.back(), g_token_strs);
+    // }
+
+    // return vbox({
+    //     text("LLM Trace — live [frame"+std::to_string(g_frame_count.load())+"]") | bold,
+    //     separator(),
+    //     text("Recent layer events:"),
+    //     vbox(event_lines) | frame | size(HEIGHT, LESS_THAN, 16),
+    //     separator(),
+    //     text("Attention snapshots:"),
+    //     vbox(attn_lines) | frame | size(HEIGHT, LESS_THAN, 10),
+    //     separator(),
+    //     text("Attention heatmap (most recent layer, averaged over heads):"),
+    //     heatmap|frame,
+    //     separator(),
+    //     text(g_generation_done ? "[generation complete — press q to quit]" : "[generating...]"),
+    // }) | border;
+    // });
     auto renderer = Renderer([&] {
-    g_frame_count++;
-    auto events = g_trace_buffer.snapshot();
-    auto attn_snaps = g_attn_buffer.snapshot();
-
-    Elements event_lines;
-    int start = events.size() > 15 ? events.size() - 15 : 0;
-    for (size_t i = start; i < events.size(); i++) {
-        auto& ev = events[i];
-        event_lines.push_back(text(ev.name + "  latency=" + std::to_string(ev.latency_ms) + "ms"));
-    }
-
-    Elements attn_lines;
-    for (auto& s : attn_snaps) {
-        attn_lines.push_back(text(s.layer_name + "  kv_len=" + std::to_string(s.kv_len)
-            + " n_heads=" + std::to_string(s.n_heads)));
-    }
-
-    return vbox({
-        text("LLM Trace — live [frame"+std::to_string(g_frame_count.load())+"]") | bold,
-        separator(),
-        text("Recent layer events:"),
-        vbox(event_lines) | frame | size(HEIGHT, LESS_THAN, 16),
-        separator(),
-        text("Attention snapshots:"),
-        vbox(attn_lines) | frame | size(HEIGHT, LESS_THAN, 10),
-        separator(),
-        text(g_generation_done ? "[generation complete — press q to quit]" : "[generating...]"),
-    }) | border;
-    });
+    return RenderUI(
+        g_trace_buffer,
+        g_attn_buffer,
+        g_token_strs,
+        g_generation_done,
+        g_frame_count
+    );
+});
 
 auto renderer_with_quit = CatchEvent(renderer, [&](Event event) {
     if (event == Event::Character('q')) {
