@@ -6,6 +6,7 @@
 #include <cmath>
 
 static TraceBuffer g_trace_buffer;
+static AttnBuffer g_attn_buffer;
 static std::chrono::steady_clock::time_point g_last_ts;
 
 static void compute_stats(const float* data, size_t n, float& mean, float& max_val, float& sparsity){
@@ -48,6 +49,16 @@ static bool eval_callback(struct ggml_tensor*t, bool ask, void* /*user_data*/){
 
     if(ptr) compute_stats(ptr, nelem, ev.mean, ev.max_val, ev.sparsity);
     g_trace_buffer.push(ev);
+
+    if(ptr && std::string(t->name).find("kq_soft_max-")!=std::string::npos){
+        AttentionSnap snap;
+        snap.layer_name = t->name;
+        snap.kv_len = t->ne[0];
+        snap.n_tokens = t->ne[1];
+        snap.n_heads = t->ne[2];
+        snap.weights.assign(ptr, ptr+nelem);
+        g_attn_buffer.push(snap);
+    }
     return true;
 }
 
@@ -71,6 +82,7 @@ int main(int argc, char** argv) {
     llama_context_params cparams = llama_context_default_params();
     cparams.cb_eval = eval_callback;
     cparams.cb_eval_user_data = nullptr;
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
     llama_context* ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
@@ -95,6 +107,11 @@ int main(int argc, char** argv) {
             ev.name.c_str(),
             (long long)ev.shape[0], (long long)ev.shape[1], (long long)ev.shape[2], (long long)ev.shape[3],
             ev.latency_ms, ev.mean, ev.max_val, ev.sparsity);
+    }
+    auto attn_snaps = g_attn_buffer.snapshot();
+    printf("\ncaptured %zu attention snaps:\n", attn_snaps.size());
+    for(auto& s: attn_snaps){
+        printf("%-20s kv_len=%d n_tokens=%d n_heads=%d\n", s.layer_name.c_str(), s.kv_len, s.n_tokens, s.n_heads);
     }
 
     llama_free(ctx);

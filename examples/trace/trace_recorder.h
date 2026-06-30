@@ -9,8 +9,16 @@
 struct LayerEvent{
     std::string name;
     std::vector<int64_t> shape;
-    float mean = 0, max_val = 0, sparcity = 0;
+    float mean = 0, max_val = 0, sparsity = 0;
     double latency_ms = 0;
+    std::chrono::system_clock::time_point timestamp;
+};
+struct AttentionSnap{
+    std::string layer_name;
+    int kv_len = 0;
+    int n_tokens = 0;
+    int n_heads = 0;
+    std::vector<float> weights;
     std::chrono::system_clock::time_point timestamp;
 };
 template<typename T, size_t N>
@@ -35,3 +43,4 @@ class RingBuffer{
     }
 };
 using TraceBuffer = RingBuffer<LayerEvent, 512>;
+using AttnBuffer = RingBuffer<AttentionSnap, 10>;
