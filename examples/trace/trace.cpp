@@ -8,6 +8,7 @@
 static TraceBuffer g_trace_buffer;
 static AttnBuffer g_attn_buffer;
 static std::chrono::steady_clock::time_point g_last_ts;
+static std::vector<std::string> g_token_strs;
 
 static void compute_stats(const float* data, size_t n, float& mean, float& max_val, float& sparsity){
     double sum = 0; max_val = -INFINITY; size_t zeros = 0;
@@ -96,6 +97,18 @@ int main(int argc, char** argv) {
     std::vector<llama_token> tokens(prompt.size() + 8);
     int n = llama_tokenize(vocab, prompt.c_str(), (int)prompt.size(), tokens.data(), (int)tokens.size(), true, false);
     tokens.resize(n);
+
+    g_token_strs.clear();
+    for(auto tok: tokens){
+        char buf[64];
+        int len = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, true);
+        if(len<0) len = 0;
+        g_token_strs.emplace_back(buf, len);
+    }
+    printf("\nToken strings (%zu):\n", g_token_strs.size());
+    for(size_t i = 0; i<g_token_strs.size(); i++){
+        printf(" [%zu] '%s'\n", i, g_token_strs[i].c_str());
+    }
 
     llama_batch batch = llama_batch_get_one(tokens.data(), (int)tokens.size());
     llama_decode(ctx, batch);
