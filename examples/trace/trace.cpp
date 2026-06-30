@@ -110,8 +110,36 @@ int main(int argc, char** argv) {
         printf(" [%zu] '%s'\n", i, g_token_strs[i].c_str());
     }
 
+    // llama_decode(ctx, batch);
+    int n_predict = 20;
+
+    llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
     llama_batch batch = llama_batch_get_one(tokens.data(), (int)tokens.size());
-    llama_decode(ctx, batch);
+    
+    for(int i = 0; i<n_predict; i++){
+        if(llama_decode(ctx, batch)!=0){
+            fprintf(stderr, "decode failed at step %d\n", i);
+            break;
+        }
+        llama_token new_token = llama_sampler_sample(smpl, ctx, -1);
+        if(llama_vocab_is_eog(vocab, new_token)){
+            printf("\n[EOG reached at step %d]\n", i);
+            break;
+        }
+        char piece_buf[64];
+        int piece_len = llama_token_to_piece(vocab, new_token, piece_buf, sizeof(piece_buf), 0, true);
+        std::string piece(piece_buf, piece_len>0?piece_len:0);
+        g_token_strs.push_back(piece);
+        printf("%s", piece.c_str());
+        fflush(stdout);
+
+        batch = llama_batch_get_one(&new_token, 1);
+    }
+    printf("\n");
+    llama_sampler_free(smpl);
+
 
     auto events = g_trace_buffer.snapshot();
     printf("Captured %zu trace events:\n", events.size());
